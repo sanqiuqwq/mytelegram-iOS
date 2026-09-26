@@ -194,9 +194,9 @@ jobs:
       # 7. Fix BuildConfigExtra deprecated APIs
       #
       # 注意：
-      # 这里不再修改最低 iOS 版本。
+      # 这里不修改最低 iOS 版本。
       #
-      # 项目使用 Xcode 26 SDK 编译时：
+      # Xcode 26 SDK 下：
       #
       #   NXGetArchInfoFromCpuType
       #   NXArchInfo
@@ -271,14 +271,23 @@ jobs:
       # ============================================================
       # 9. Prepare fake codesigning data
       #
-      # 这里使用项目自带 fake-codesigning。
+      # 项目自带 fake-codesigning。
       #
-      # 先让 release_arm64 构建完整跑通。
-      # 生成 IPA 后再用全能签重新签。
+      # 重要：
+      # fake-codesigning 不只是 provisioning profile，
+      # 还包含 fake certificates。
       #
-      # 你的 .p12 / .mobileprovision 不放进仓库。
+      # 必须先把 fake certificates 导入 GitHub Actions
+      # 的临时 macOS Keychain。
+      #
+      # 否则 IntentsExtension 等扩展在签名时会报：
+      #
+      # Unable to find an identity on the system matching
+      # the ones in .../Intents.mobileprovision
+      #
+      # 这里不会使用你的真实 .p12。
       # ============================================================
-      - name: Prepare build codesigning data
+      - name: Prepare fake codesigning data
         shell: bash
         run: |
           set -e
@@ -289,27 +298,67 @@ jobs:
 
           cp -R build-system/fake-codesigning/. build-codesigning/
 
+          echo
           echo "=============================="
           echo "Provisioning profiles"
           echo "=============================="
 
-          find build-codesigning/profiles \
-            -maxdepth 1 \
-            -type f \
-            -name "*.mobileprovision" \
-            -print \
-            | sort
+          if [ -d "build-codesigning/provisioning" ]; then
+            find build-codesigning/provisioning \
+              -maxdepth 1 \
+              -type f \
+              -name "*.mobileprovision" \
+              -print \
+              | sort
+          else
+            echo "ERROR: build-codesigning/provisioning not found."
+            echo
+            echo "Available fake-codesigning files:"
+            find build-codesigning \
+              -maxdepth 3 \
+              -type f \
+              -print \
+              | sort
+            exit 1
+          fi
 
           echo
           echo "=============================="
           echo "Certificates"
           echo "=============================="
 
-          find build-codesigning/certs \
-            -maxdepth 1 \
-            -type f \
-            -print \
-            | sort
+          if [ -d "build-codesigning/certs" ]; then
+            find build-codesigning/certs \
+              -maxdepth 2 \
+              -type f \
+              -print \
+              | sort
+          else
+            echo "ERROR: build-codesigning/certs not found."
+            exit 1
+          fi
+
+          echo
+          echo "=============================="
+          echo "Import fake certificates"
+          echo "=============================="
+
+          if [ ! -f "build-system/Make/ImportCertificates.py" ]; then
+            echo "ERROR: ImportCertificates.py not found."
+            exit 1
+          fi
+
+          python3 build-system/Make/ImportCertificates.py \
+            --path "$PWD/build-codesigning/certs"
+
+          echo
+          echo "=============================="
+          echo "Available signing identities"
+          echo "=============================="
+
+          security find-identity \
+            -v \
+            -p codesigning
 
       # ============================================================
       # 10. Build ARM64 IPA
