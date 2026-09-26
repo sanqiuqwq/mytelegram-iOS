@@ -10,6 +10,10 @@ jobs:
     steps:
       # ============================================================
       # 1. Checkout 主仓库
+      #
+      # 不让 actions/checkout 自动拉 submodule。
+      # 因为 .gitmodules 里面 rlottie / tgcalls 使用了 ../xxx.git，
+      # 在你的 fork 下会错误解析成 sanqiuqwq/xxx.git。
       # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
@@ -119,6 +123,12 @@ jobs:
 
       # ============================================================
       # 6. Create build configuration
+      #
+      # 只修改 API ID / API Hash。
+      #
+      # 不修改 bundle_id / team_id。
+      # 使用项目自带 fake-codesigning。
+      # 后面生成 IPA 后再用全能签重新签名。
       # ============================================================
       - name: Create build configuration
         env:
@@ -181,75 +191,22 @@ jobs:
           PY
 
       # ============================================================
-      # 7. Set minimum iOS version to 18.0
-      # ============================================================
-      - name: Set minimum iOS version to 18.0
-        shell: bash
-        run: |
-          set -e
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path("Telegram/BUILD")
-
-          if not path.exists():
-              raise SystemExit("Telegram/BUILD was not found.")
-
-          text = path.read_text(encoding="utf-8")
-
-          pattern = r'minimum_os_version\s*=\s*"[^"]+"'
-
-          matches = list(re.finditer(pattern, text))
-
-          if not matches:
-              raise SystemExit(
-                  "Could not find minimum_os_version in Telegram/BUILD"
-              )
-
-          print("Original minimum OS settings:")
-
-          for match in matches:
-              print("  " + match.group(0))
-
-          text, count = re.subn(
-              pattern,
-              'minimum_os_version = "18.0"',
-              text,
-          )
-
-          path.write_text(text, encoding="utf-8")
-
-          print()
-          print(
-              f"Changed {count} minimum_os_version setting(s) "
-              "to iOS 18.0."
-          )
-
-          print()
-          print("New minimum OS settings:")
-
-          for line in text.splitlines():
-              if "minimum_os_version" in line:
-                  print("  " + line.strip())
-          PY
-
-      # ============================================================
-      # 8. 修复 Xcode 26 deprecated API
+      # 7. Fix BuildConfigExtra deprecated APIs
       #
-      # BuildConfigExtra.m 使用：
+      # 注意：
+      # 这里不再修改最低 iOS 版本。
+      #
+      # 项目使用 Xcode 26 SDK 编译时：
       #
       #   NXGetArchInfoFromCpuType
       #   NXArchInfo
       #
-      # Xcode 26 SDK 将其标记为 deprecated。
+      # 会产生 deprecated warning。
       #
-      # 项目启用了 -Werror，所以 deprecated warning
-      # 会直接导致编译失败。
+      # 项目启用了 -Werror，
+      # 所以 warning 会变成编译错误。
       #
-      # 这里只关闭这个文件的 deprecated warning。
-      # 不关闭整个项目的 -Werror。
+      # 这里只针对 BuildConfigExtra.m 忽略 deprecated warning。
       # ============================================================
       - name: Fix BuildConfigExtra deprecated warnings
         shell: bash
@@ -290,7 +247,7 @@ jobs:
           head -n 12 "$FILE"
 
       # ============================================================
-      # 9. Verify iPhone + iPad targets
+      # 8. Verify iPhone + iPad targets
       # ============================================================
       - name: Verify iPhone and iPad targets
         shell: bash
@@ -312,7 +269,7 @@ jobs:
           fi
 
       # ============================================================
-      # 10. Prepare fake codesigning data
+      # 9. Prepare fake codesigning data
       #
       # 这里使用项目自带 fake-codesigning。
       #
@@ -355,7 +312,12 @@ jobs:
             | sort
 
       # ============================================================
-      # 11. Build ARM64 IPA
+      # 10. Build ARM64 IPA
+      #
+      # 使用项目原本的 release_arm64 配置。
+      #
+      # 不强制修改 minimum_os_version。
+      # 使用项目默认 Deployment Target。
       # ============================================================
       - name: Build ARM64 IPA
         shell: bash
@@ -374,7 +336,7 @@ jobs:
             --configuration=release_arm64
 
       # ============================================================
-      # 12. Check generated artifacts
+      # 11. Check generated artifacts
       # ============================================================
       - name: Check build artifacts
         shell: bash
@@ -409,7 +371,7 @@ jobs:
           ls -lh build/artifacts/Telegram.ipa
 
       # ============================================================
-      # 13. Prepare GitHub Actions artifacts
+      # 12. Prepare GitHub Actions artifacts
       # ============================================================
       - name: Prepare final artifacts
         shell: bash
@@ -421,7 +383,7 @@ jobs:
 
           cp \
             build/artifacts/Telegram.ipa \
-            final-artifacts/MyTelegram-iOS-iOS18-arm64.ipa
+            final-artifacts/MyTelegram-iOS-arm64.ipa
 
           if [ -f "build/artifacts/Telegram.DSYMs.zip" ]; then
             cp \
@@ -436,11 +398,11 @@ jobs:
           ls -lh final-artifacts/
 
       # ============================================================
-      # 14. Upload IPA
+      # 13. Upload IPA
       # ============================================================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: MyTelegram-iOS-iOS18
+          name: MyTelegram-iOS-arm64
           path: final-artifacts/
           retention-days: 14
