@@ -10,10 +10,6 @@ jobs:
     steps:
       # ============================================================
       # 1. Checkout 主仓库
-      #
-      # 不让 actions/checkout 自动拉 submodule。
-      # 因为 .gitmodules 里面 rlottie / tgcalls 使用了 ../xxx.git，
-      # 在你的 fork 下会错误解析成 sanqiuqwq/xxx.git。
       # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
@@ -123,12 +119,6 @@ jobs:
 
       # ============================================================
       # 6. Create build configuration
-      #
-      # 只修改 API ID / API Hash。
-      #
-      # 不修改 bundle_id / team_id。
-      # 因为这里使用的是项目自己的 build configuration +
-      # fake-codesigning，后面再使用全能签重新签。
       # ============================================================
       - name: Create build configuration
         env:
@@ -192,12 +182,6 @@ jobs:
 
       # ============================================================
       # 7. Set minimum iOS version to 18.0
-      #
-      # Telegram/BUILD 当前定义：
-      #
-      #     minimum_os_version = "13.0"
-      #
-      # 只在 GitHub Actions 临时修改，不会提交回仓库。
       # ============================================================
       - name: Set minimum iOS version to 18.0
         shell: bash
@@ -238,7 +222,10 @@ jobs:
           path.write_text(text, encoding="utf-8")
 
           print()
-          print(f"Changed {count} minimum_os_version setting(s) to iOS 18.0.")
+          print(
+              f"Changed {count} minimum_os_version setting(s) "
+              "to iOS 18.0."
+          )
 
           print()
           print("New minimum OS settings:")
@@ -249,7 +236,61 @@ jobs:
           PY
 
       # ============================================================
-      # 8. Verify iPhone + iPad targets
+      # 8. 修复 Xcode 26 deprecated API
+      #
+      # BuildConfigExtra.m 使用：
+      #
+      #   NXGetArchInfoFromCpuType
+      #   NXArchInfo
+      #
+      # Xcode 26 SDK 将其标记为 deprecated。
+      #
+      # 项目启用了 -Werror，所以 deprecated warning
+      # 会直接导致编译失败。
+      #
+      # 这里只关闭这个文件的 deprecated warning。
+      # 不关闭整个项目的 -Werror。
+      # ============================================================
+      - name: Fix BuildConfigExtra deprecated warnings
+        shell: bash
+        run: |
+          set -e
+
+          FILE="submodules/BuildConfigExtra/Sources/BuildConfigExtra.m"
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: $FILE not found."
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path(
+              "submodules/BuildConfigExtra/Sources/BuildConfigExtra.m"
+          )
+
+          text = path.read_text(encoding="utf-8")
+
+          pragma = (
+              '#pragma clang diagnostic ignored '
+              '"-Wdeprecated-declarations"'
+          )
+
+          if pragma not in text:
+              text = pragma + "\n\n" + text
+              path.write_text(text, encoding="utf-8")
+              print("Added deprecated-warning suppression.")
+          else:
+              print("Deprecated-warning suppression already exists.")
+          PY
+
+          echo
+          echo "=== BuildConfigExtra.m header ==="
+          head -n 12 "$FILE"
+
+      # ============================================================
+      # 9. Verify iPhone + iPad targets
       # ============================================================
       - name: Verify iPhone and iPad targets
         shell: bash
@@ -271,15 +312,12 @@ jobs:
           fi
 
       # ============================================================
-      # 9. Prepare fake codesigning data
+      # 10. Prepare fake codesigning data
       #
-      # 这里故意使用项目自带 fake-codesigning。
+      # 这里使用项目自带 fake-codesigning。
       #
-      # 目的：
-      #   让 release_arm64 构建系统完整跑通。
-      #
-      # 生成 IPA 后：
-      #   用全能签重新签名
+      # 先让 release_arm64 构建完整跑通。
+      # 生成 IPA 后再用全能签重新签。
       #
       # 你的 .p12 / .mobileprovision 不放进仓库。
       # ============================================================
@@ -317,15 +355,7 @@ jobs:
             | sort
 
       # ============================================================
-      # 10. Build ARM64 device IPA
-      #
-      # 官方项目 IPA 构建方式：
-      #
-      # Make.py build
-      # --configurationPath
-      # --codesigningInformationPath
-      # --buildNumber
-      # --configuration=release_arm64
+      # 11. Build ARM64 IPA
       # ============================================================
       - name: Build ARM64 IPA
         shell: bash
@@ -344,7 +374,7 @@ jobs:
             --configuration=release_arm64
 
       # ============================================================
-      # 11. Check generated artifacts
+      # 12. Check generated artifacts
       # ============================================================
       - name: Check build artifacts
         shell: bash
@@ -379,7 +409,7 @@ jobs:
           ls -lh build/artifacts/Telegram.ipa
 
       # ============================================================
-      # 12. Prepare GitHub Actions artifacts
+      # 13. Prepare GitHub Actions artifacts
       # ============================================================
       - name: Prepare final artifacts
         shell: bash
@@ -406,7 +436,7 @@ jobs:
           ls -lh final-artifacts/
 
       # ============================================================
-      # 13. Upload IPA
+      # 14. Upload IPA
       # ============================================================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
