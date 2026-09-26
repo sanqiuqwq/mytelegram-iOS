@@ -127,6 +127,7 @@ jobs:
       # 只修改 API ID / API Hash。
       #
       # 不修改 bundle_id / team_id。
+      #
       # 使用项目自带 fake-codesigning。
       # 后面生成 IPA 后再用全能签重新签名。
       # ============================================================
@@ -271,21 +272,29 @@ jobs:
       # ============================================================
       # 9. Prepare fake codesigning data
       #
-      # 项目自带 fake-codesigning。
+      # 实际目录结构已经确认：
       #
-      # 重要：
-      # fake-codesigning 不只是 provisioning profile，
-      # 还包含 fake certificates。
+      # build-system/fake-codesigning/
+      # ├── certs/
+      # │   ├── Public.cer
+      # │   └── SelfSigned.p12
+      # └── profiles/
+      #     ├── BroadcastUpload.mobileprovision
+      #     ├── Intents.mobileprovision
+      #     ├── NotificationContent.mobileprovision
+      #     ├── NotificationService.mobileprovision
+      #     ├── Share.mobileprovision
+      #     ├── Telegram.mobileprovision
+      #     ├── WatchApp.mobileprovision
+      #     ├── WatchExtension.mobileprovision
+      #     └── Widget.mobileprovision
       #
-      # 必须先把 fake certificates 导入 GitHub Actions
-      # 的临时 macOS Keychain。
+      # 先复制 fake-codesigning。
       #
-      # 否则 IntentsExtension 等扩展在签名时会报：
+      # 然后使用项目自己的 ImportCertificates.py
+      # 将 SelfSigned.p12 导入 CI 的 Keychain。
       #
-      # Unable to find an identity on the system matching
-      # the ones in .../Intents.mobileprovision
-      #
-      # 这里不会使用你的真实 .p12。
+      # 不使用你的真实 .p12。
       # ============================================================
       - name: Prepare fake codesigning data
         shell: bash
@@ -303,15 +312,8 @@ jobs:
           echo "Provisioning profiles"
           echo "=============================="
 
-          if [ -d "build-codesigning/provisioning" ]; then
-            find build-codesigning/provisioning \
-              -maxdepth 1 \
-              -type f \
-              -name "*.mobileprovision" \
-              -print \
-              | sort
-          else
-            echo "ERROR: build-codesigning/provisioning not found."
+          if [ ! -d "build-codesigning/profiles" ]; then
+            echo "ERROR: build-codesigning/profiles not found."
             echo
             echo "Available fake-codesigning files:"
             find build-codesigning \
@@ -322,26 +324,38 @@ jobs:
             exit 1
           fi
 
+          find build-codesigning/profiles \
+            -maxdepth 1 \
+            -type f \
+            -name "*.mobileprovision" \
+            -print \
+            | sort
+
           echo
           echo "=============================="
           echo "Certificates"
           echo "=============================="
 
-          if [ -d "build-codesigning/certs" ]; then
-            find build-codesigning/certs \
-              -maxdepth 2 \
-              -type f \
-              -print \
-              | sort
-          else
+          if [ ! -d "build-codesigning/certs" ]; then
             echo "ERROR: build-codesigning/certs not found."
             exit 1
           fi
+
+          find build-codesigning/certs \
+            -maxdepth 1 \
+            -type f \
+            -print \
+            | sort
 
           echo
           echo "=============================="
           echo "Import fake certificates"
           echo "=============================="
+
+          if [ ! -f "build-codesigning/certs/SelfSigned.p12" ]; then
+            echo "ERROR: SelfSigned.p12 not found."
+            exit 1
+          fi
 
           if [ ! -f "build-system/Make/ImportCertificates.py" ]; then
             echo "ERROR: ImportCertificates.py not found."
