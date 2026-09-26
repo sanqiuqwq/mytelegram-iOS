@@ -1,0 +1,253 @@
+````yaml
+name: Build MyTelegram iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+
+    steps:
+      # ============================================================
+      # 1. Checkout
+      # ============================================================
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      # ============================================================
+      # 2. Xcode
+      #    versions.json currently requires Xcode 26.4 / macOS 26
+      # ============================================================
+      - name: Select Xcode 26.4
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.4"
+
+      - name: Show build environment
+        run: |
+          set -e
+
+          echo "=== Xcode ==="
+          xcodebuild -version
+
+          echo
+          echo "=== macOS ==="
+          sw_vers
+
+          echo
+          echo "=== SDK ==="
+          xcrun --sdk iphoneos --show-sdk-version
+
+          echo
+          echo "=== Python ==="
+          python3 --version
+
+      # ============================================================
+      # 3. Verify MyTelegram server address
+      # ============================================================
+      - name: Verify MyTelegram server IP
+        run: |
+          set -e
+
+          echo "Checking TelegramCore network configuration..."
+
+          grep -n "45.196.236.46" \
+            submodules/TelegramCore/Sources/Network/Network.swift
+
+      # ============================================================
+      # 4. Create build configuration
+      #
+      # We intentionally keep the project's normal app identity here.
+      # The final IPA can be re-signed with your own signing profile.
+      # ============================================================
+      - name: Create build configuration
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          set -e
+
+          python3 - <<'PY'
+          import json
+          import os
+
+          source = "build-system/appstore-configuration.json"
+          destination = "build-configuration.json"
+
+          with open(source, "r", encoding="utf-8") as f:
+              config = json.load(f)
+
+          api_id = os.environ["TG_API_ID"]
+          api_hash = os.environ["TG_API_HASH"]
+
+          if not api_id:
+              raise SystemExit("TG_API_ID is empty")
+
+          if not api_hash:
+              raise SystemExit("TG_API_HASH is empty")
+
+          config["api_id"] = api_id
+          config["api_hash"] = api_hash
+
+          with open(destination, "w", encoding="utf-8") as f:
+              json.dump(config, f, indent=2)
+
+          print("Build configuration created.")
+          print("Bundle ID:", config["bundle_id"])
+          print("Team ID:", config["team_id"])
+          print("API ID:", config["api_id"])
+          print("API Hash: configured")
+          PY
+
+      # ============================================================
+      # 5. Force minimum iOS version to 18.0
+      #
+      # The current Telegram/BUILD contains:
+      #     minimum_os_version = "13.0"
+      #
+      # We modify it only inside the GitHub runner.
+      # Nothing is committed back to your repository.
+      # ============================================================
+      - name: Set minimum iOS version to 18.0
+        run: |
+          set -e
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("Telegram/BUILD")
+          text = path.read_text(encoding="utf-8")
+
+          old = 'minimum_os_version = "13.0"'
+          new = 'minimum_os_version = "18.0"'
+
+          count = text.count(old)
+
+          if count == 0:
+              print("No minimum_os_version = 13.0 found.")
+              print("Please inspect Telegram/BUILD.")
+          else:
+              text = text.replace(old, new)
+              path.write_text(text, encoding="utf-8")
+              print(f"Changed {count} occurrence(s) from iOS 13.0 to iOS 18.0.")
+
+          print()
+          print("Current minimum OS settings:")
+          for line in text.splitlines():
+              if "minimum_os_version =" in line:
+                  print(line)
+          PY
+
+      # ============================================================
+      # 6. Prepare codesigning directory used by Make.py
+      #
+      # Make.py expects:
+      #
+      # build-codesigning/
+      #   certs/
+      #   profiles/
+      #
+      # The repository's fake-codesigning directory provides the
+      # complete profile layout needed by the build system.
+      # ============================================================
+      - name: Prepare build codesigning data
+        run: |
+          set -e
+
+          rm -rf build-codesigning
+          mkdir -p build-codesigning
+
+          cp -R build-system/fake-codesigning/. build-codesigning/
+
+          echo "=== Profiles ==="
+          find build-codesigning/profiles \
+            -maxdepth 1 \
+            -type f \
+            -name "*.mobileprovision" \
+            -print
+
+          echo
+          echo "=== Certificates ==="
+          find build-codesigning/certs \
+            -maxdepth 1 \
+            -type f \
+            -print
+
+      # ============================================================
+      # 7. Build ARM64 device IPA
+      #
+      # This is the official project build entry:
+      # release_arm64
+      # ============================================================
+      - name: Build ARM64 IPA
+        run: |
+          set -e
+
+          python3 -u build-system/Make/Make.py \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            --overrideXcodeVersion \
+            build \
+            --configurationPath="$PWD/build-configuration.json" \
+            --codesigningInformationPath="$PWD/build-codesigning" \
+            --buildNumber="${{ github.run_number }}" \
+            --configuration=release_arm64 \
+            --outputBuildArtifactsPath="$PWD/build/artifacts"
+
+      # ============================================================
+      # 8. Verify IPA
+      # ============================================================
+      - name: Inspect generated IPA
+        run: |
+          set -e
+
+          echo "=== Build artifacts ==="
+          find build/artifacts \
+            -maxdepth 2 \
+            -type f \
+            -print
+
+          echo
+          echo "=== IPA ==="
+
+          if [ ! -f "build/artifacts/Telegram.ipa" ]; then
+            echo "ERROR: Telegram.ipa was not generated."
+            exit 1
+          fi
+
+          ls -lh build/artifacts/Telegram.ipa
+
+      # ============================================================
+      # 9. Create final artifact names
+      # ============================================================
+      - name: Prepare GitHub artifacts
+        run: |
+          set -e
+
+          mkdir -p final-artifacts
+
+          cp \
+            build/artifacts/Telegram.ipa \
+            final-artifacts/MyTelegram-iOS-arm64.ipa
+
+          if [ -f "build/artifacts/Telegram.DSYMs.zip" ]; then
+            cp \
+              build/artifacts/Telegram.DSYMs.zip \
+              final-artifacts/MyTelegram-iOS.DSYMs.zip
+          fi
+
+          echo "=== Final artifacts ==="
+          ls -lh final-artifacts/
+
+      # ============================================================
+      # 10. Upload IPA
+      # ============================================================
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyTelegram-iOS-iOS18
+          path: final-artifacts/
+          retention-days: 14
