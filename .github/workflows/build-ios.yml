@@ -88,6 +88,12 @@ jobs:
 
           echo
           echo "=============================="
+          echo "Xcode path"
+          echo "=============================="
+          xcode-select -p
+
+          echo
+          echo "=============================="
           echo "iPhoneOS SDK"
           echo "=============================="
           xcrun --sdk iphoneos --show-sdk-version
@@ -110,6 +116,11 @@ jobs:
 
           echo "Checking:"
           echo "$FILE"
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: $FILE not found."
+            exit 1
+          fi
 
           if grep -q "45.196.236.46" "$FILE"; then
             echo
@@ -195,7 +206,7 @@ jobs:
       # 7. Fix BuildConfigExtra deprecated APIs
       #
       # 注意：
-      # 这里不修改最低 iOS 版本。
+      # 不修改最低 iOS 版本。
       #
       # Xcode 26 SDK 下：
       #
@@ -272,7 +283,7 @@ jobs:
       # ============================================================
       # 9. Prepare fake codesigning data
       #
-      # 实际目录结构已经确认：
+      # 实际目录结构：
       #
       # build-system/fake-codesigning/
       # ├── certs/
@@ -289,10 +300,7 @@ jobs:
       #     ├── WatchExtension.mobileprovision
       #     └── Widget.mobileprovision
       #
-      # 先复制 fake-codesigning。
-      #
-      # 然后使用项目自己的 ImportCertificates.py
-      # 将 SelfSigned.p12 导入 CI 的 Keychain。
+      # 使用项目自己的 ImportCertificates.py。
       #
       # 不使用你的真实 .p12。
       # ============================================================
@@ -302,10 +310,20 @@ jobs:
           set -e
 
           rm -rf build-codesigning
-
           mkdir -p build-codesigning
 
           cp -R build-system/fake-codesigning/. build-codesigning/
+
+          echo
+          echo "=============================="
+          echo "Fake codesigning directory"
+          echo "=============================="
+
+          find build-codesigning \
+            -maxdepth 3 \
+            -type f \
+            -print \
+            | sort
 
           echo
           echo "=============================="
@@ -314,13 +332,19 @@ jobs:
 
           if [ ! -d "build-codesigning/profiles" ]; then
             echo "ERROR: build-codesigning/profiles not found."
-            echo
-            echo "Available fake-codesigning files:"
-            find build-codesigning \
-              -maxdepth 3 \
-              -type f \
-              -print \
-              | sort
+            exit 1
+          fi
+
+          PROFILE_COUNT=$(find build-codesigning/profiles \
+            -maxdepth 1 \
+            -type f \
+            -name "*.mobileprovision" \
+            | wc -l | tr -d ' ')
+
+          echo "Provisioning profile count: $PROFILE_COUNT"
+
+          if [ "$PROFILE_COUNT" -eq 0 ]; then
+            echo "ERROR: No fake provisioning profiles found."
             exit 1
           fi
 
@@ -389,6 +413,10 @@ jobs:
 
           rm -rf build/artifacts
 
+          echo "=============================="
+          echo "Starting ARM64 build"
+          echo "=============================="
+
           python3 -u build-system/Make/Make.py \
             --cacheDir="$HOME/telegram-bazel-cache" \
             --overrideXcodeVersion \
@@ -398,62 +426,151 @@ jobs:
             --buildNumber="${{ github.run_number }}" \
             --configuration=release_arm64
 
+          echo
+          echo "=============================="
+          echo "Make.py finished successfully"
+          echo "=============================="
+
       # ============================================================
-      # 11. Check generated artifacts
+      # 11. Locate generated IPA
+      #
+      # 不假定 Telegram.ipa 一定存在于 build/artifacts。
+      #
+      # Make.py / Bazel 的实际输出位置可能随项目版本变化。
+      #
+      # 所以这里直接搜索整个工作目录。
       # ============================================================
-      - name: Check build artifacts
+      - name: Locate generated IPA
         shell: bash
         run: |
           set -e
 
           echo "=============================="
-          echo "build/artifacts"
+          echo "Current directory"
           echo "=============================="
 
-          if [ ! -d "build/artifacts" ]; then
-            echo "ERROR: build/artifacts does not exist."
-            exit 1
-          fi
-
-          find build/artifacts \
-            -maxdepth 2 \
-            -type f \
-            -print \
-            | sort
+          pwd
 
           echo
           echo "=============================="
-          echo "IPA"
+          echo "Top-level directories"
           echo "=============================="
 
-          if [ ! -f "build/artifacts/Telegram.ipa" ]; then
-            echo "ERROR: Telegram.ipa was not generated."
+          find . \
+            -maxdepth 2 \
+            -type d \
+            -not -path './.git*' \
+            | sort \
+            | head -300
+
+          echo
+          echo "=============================="
+          echo "Searching for IPA files"
+          echo "=============================="
+
+          IPA_FILES=$(find . \
+            -type f \
+            -name "*.ipa" \
+            -not -path './.git/*' \
+            -print \
+            | sort)
+
+          if [ -z "$IPA_FILES" ]; then
+            echo
+            echo "ERROR: No IPA file was generated."
+            echo
+            echo "=============================="
+            echo "Searching for Telegram.app"
+            echo "=============================="
+
+            find . \
+              -type d \
+              -name "*.app" \
+              -not -path './.git/*' \
+              -print \
+              | sort \
+              | head -300
+
+            echo
+            echo "=============================="
+            echo "Searching for Telegram outputs"
+            echo "=============================="
+
+            find . \
+              -type f \
+              \( \
+                -name "Telegram*" \
+                -o -name "*.xcarchive" \
+                -o -name "*.zip" \
+              \) \
+              -not -path './.git/*' \
+              -print \
+              | sort \
+              | head -500
+
+            echo
+            echo "ERROR: Build completed but no IPA was found."
             exit 1
           fi
 
-          ls -lh build/artifacts/Telegram.ipa
+          echo "$IPA_FILES"
 
-      # ============================================================
-      # 12. Prepare GitHub Actions artifacts
-      # ============================================================
-      - name: Prepare final artifacts
-        shell: bash
-        run: |
-          set -e
+          echo
+          echo "=============================="
+          echo "IPA details"
+          echo "=============================="
+
+          IPA=$(echo "$IPA_FILES" | head -n 1)
+
+          echo "Selected IPA:"
+          echo "$IPA"
+
+          ls -lh "$IPA"
+
+          echo
+          echo "=============================="
+          echo "IPA file information"
+          echo "=============================="
+
+          file "$IPA"
+
+          echo
+          echo "=============================="
+          echo "Preparing final artifacts"
+          echo "=============================="
 
           rm -rf final-artifacts
           mkdir -p final-artifacts
 
           cp \
-            build/artifacts/Telegram.ipa \
+            "$IPA" \
             final-artifacts/MyTelegram-iOS-arm64.ipa
+
+          echo
+          echo "Final IPA:"
+          ls -lh final-artifacts/MyTelegram-iOS-arm64.ipa
+
+      # ============================================================
+      # 12. Collect optional dSYM
+      # ============================================================
+      - name: Collect dSYM
+        shell: bash
+        run: |
+          set -e
 
           if [ -f "build/artifacts/Telegram.DSYMs.zip" ]; then
             cp \
               build/artifacts/Telegram.DSYMs.zip \
               final-artifacts/MyTelegram-iOS.DSYMs.zip
+
+            echo "Found dSYM:"
+            ls -lh final-artifacts/MyTelegram-iOS.DSYMs.zip
+          else
+            echo "No build/artifacts/Telegram.DSYMs.zip found."
+            echo "Skipping dSYM."
           fi
 
+          echo
           echo "=============================="
           echo "Final artifacts"
           echo "=============================="
@@ -461,7 +578,7 @@ jobs:
           ls -lh final-artifacts/
 
       # ============================================================
-      # 13. Upload IPA
+      # 13. Upload GitHub Actions artifacts
       # ============================================================
       - name: Upload IPA
         uses: actions/upload-artifact@v4
