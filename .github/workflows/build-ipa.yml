@@ -1,0 +1,325 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 120
+
+    env:
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      TZ: UTC
+
+    steps:
+      # ------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      # ------------------------------------------------------------
+      # 2. Setup Xcode 26.2
+      # ------------------------------------------------------------
+      - name: Setup Xcode 26.2
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.2"
+
+      - name: Show build environment
+        run: |
+          set -euxo pipefail
+
+          xcodebuild -version
+          xcode-select -p
+          swift --version
+          python3 --version
+          uname -a
+
+      # ------------------------------------------------------------
+      # 3. Verify repository state
+      # ------------------------------------------------------------
+      - name: Verify MyTelegram server IP
+        run: |
+          set -euxo pipefail
+
+          echo "Checking TelegramCore Network.swift..."
+
+          grep -n "45.196.236.46" \
+            submodules/TelegramCore/Sources/Network/Network.swift
+
+          if grep -R "192\.168\.1\.100" \
+            submodules/TelegramCore/Sources/Network/Network.swift; then
+            echo "ERROR: old server IP still exists"
+            exit 1
+          fi
+
+      # ------------------------------------------------------------
+      # 4. Prepare configuration
+      #
+      # Required GitHub Repository Secrets:
+      #
+      # TG_API_ID
+      # TG_API_HASH
+      #
+      # API credentials are not hard-coded into the repository.
+      # ------------------------------------------------------------
+      - name: Prepare Telegram configuration
+        env:
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TG_API_ID:-}" ]; then
+            echo "ERROR: TG_API_ID secret is not configured."
+            exit 1
+          fi
+
+          if [ -z "${TG_API_HASH:-}" ]; then
+            echo "ERROR: TG_API_HASH secret is not configured."
+            exit 1
+          fi
+
+          mkdir -p build-input
+
+          python3 <<'PY'
+          import json
+          import os
+          import plistlib
+          import subprocess
+
+          template_path = "build-system/template_minimal_development_configuration.json"
+          output_path = "build-input/ios-build-configuration.json"
+          profile_path = "build-system/fake-codesigning/profiles/Telegram.mobileprovision"
+
+          api_id = os.environ["TG_API_ID"]
+          api_hash = os.environ["TG_API_HASH"]
+
+          # Decode the fake provisioning profile so that the configuration
+          # matches the repository's own fake-codesigning data.
+          decoded_profile = "/tmp/telegram-profile.plist"
+
+          subprocess.run(
+              [
+                  "security",
+                  "cms",
+                  "-D",
+                  "-i",
+                  profile_path,
+                  "-o",
+                  decoded_profile,
+              ],
+              check=True,
+          )
+
+          with open(decoded_profile, "rb") as f:
+              profile = plistlib.load(f)
+
+          entitlements = profile["Entitlements"]
+
+          application_identifier = entitlements["application-identifier"]
+          team_id, profile_bundle_id = application_identifier.split(".", 1)
+
+          # If the fake profile uses a wildcard, use our own bundle ID.
+          if profile_bundle_id == "*":
+              bundle_id = "org.sanqiuqwq.mytelegram"
+          else:
+              bundle_id = profile_bundle_id
+
+          config = {
+              "bundle_id": bundle_id,
+              "api_id": api_id,
+              "api_hash": api_hash,
+              "team_id": team_id,
+              "app_center_id": "0",
+              "is_internal_build": "true",
+              "is_appstore_build": "false",
+              "appstore_id": "0",
+              "app_specific_url_scheme": "tg",
+              "premium_iap_product_id": "",
+              "enable_siri": False,
+              "enable_icloud": False
+          }
+
+          with open(output_path, "w", encoding="utf-8") as f:
+              json.dump(config, f, indent=2)
+
+          print("Generated configuration:")
+          print(json.dumps({
+              "bundle_id": bundle_id,
+              "team_id": team_id,
+              "app_center_id": "0",
+              "is_internal_build": "true",
+              "is_appstore_build": "false",
+              "appstore_id": "0",
+              "app_specific_url_scheme": "tg",
+              "premium_iap_product_id": "",
+              "enable_siri": False,
+              "enable_icloud": False
+          }, indent=2))
+          PY
+
+      # ------------------------------------------------------------
+      # 5. Build Release ARM64
+      #
+      # Telegram's Make.py requires a codesigning source for the
+      # device build. We use the repository's fake-codesigning data.
+      #
+      # The resulting IPA is NOT intended to be installed directly.
+      # We strip its signatures in the next step.
+      # ------------------------------------------------------------
+      - name: Build Release ARM64 IPA
+        run: |
+          set -euxo pipefail
+
+          BUILD_NUMBER=$((100000 + GITHUB_RUN_NUMBER))
+
+          echo "Build number: ${BUILD_NUMBER}"
+
+          python3 -u \
+            build-system/Make/Make.py \
+            --cacheDir="$HOME/telegram-bazel-cache" \
+            build \
+            --configurationPath="build-input/ios-build-configuration.json" \
+            --codesigningInformationPath="build-system/fake-codesigning" \
+            --buildNumber="${BUILD_NUMBER}" \
+            --configuration=release_arm64 \
+            --outputBuildArtifactsPath="build/artifacts"
+
+      # ------------------------------------------------------------
+      # 6. Check generated IPA
+      # ------------------------------------------------------------
+      - name: Check generated IPA
+        run: |
+          set -euxo pipefail
+
+          test -f build/artifacts/Telegram.ipa
+
+          ls -lh build/artifacts/Telegram.ipa
+
+          unzip -l build/artifacts/Telegram.ipa | head -80
+
+      # ------------------------------------------------------------
+      # 7. Strip all Apple code signatures
+      #
+      # This converts the fake-signed IPA into an unsigned IPA.
+      #
+      # Remove:
+      #   _CodeSignature/
+      #   embedded.mobileprovision
+      #
+      # from the main app and all nested bundles/frameworks/extensions.
+      # ------------------------------------------------------------
+      - name: Strip code signing from IPA
+        run: |
+          set -euxo pipefail
+
+          rm -rf build/unsigned
+          mkdir -p build/unsigned
+
+          unzip -q \
+            build/artifacts/Telegram.ipa \
+            -d build/unsigned
+
+          echo "Before stripping:"
+          find build/unsigned/Payload -name "_CodeSignature" -type d -print || true
+          find build/unsigned/Payload -name "embedded.mobileprovision" -type f -print || true
+
+          # Remove code signatures from every nested bundle/framework/app.
+          find build/unsigned/Payload \
+            -type d \
+            -name "_CodeSignature" \
+            -prune \
+            -exec rm -rf {} +
+
+          # Remove all embedded provisioning profiles.
+          find build/unsigned/Payload \
+            -type f \
+            -name "embedded.mobileprovision" \
+            -delete
+
+          echo "After stripping:"
+          find build/unsigned/Payload \
+            \( -name "_CodeSignature" -o -name "embedded.mobileprovision" \) \
+            -print
+
+          # Repack IPA.
+          cd build/unsigned
+
+          rm -f ../MyTelegram-unsigned.ipa
+
+          zip -qry \
+            ../MyTelegram-unsigned.ipa \
+            Payload
+
+          cd ../..
+
+          test -f build/MyTelegram-unsigned.ipa
+
+          ls -lh build/MyTelegram-unsigned.ipa
+
+      # ------------------------------------------------------------
+      # 8. Basic IPA inspection
+      # ------------------------------------------------------------
+      - name: Verify unsigned IPA
+        run: |
+          set -euxo pipefail
+
+          rm -rf /tmp/ipa-check
+          mkdir -p /tmp/ipa-check
+
+          unzip -q \
+            build/MyTelegram-unsigned.ipa \
+            -d /tmp/ipa-check
+
+          echo "Checking for remaining signatures..."
+
+          if find /tmp/ipa-check/Payload \
+              -type d \
+              -name "_CodeSignature" \
+              | grep -q .; then
+            echo "ERROR: _CodeSignature still exists"
+            exit 1
+          fi
+
+          if find /tmp/ipa-check/Payload \
+              -type f \
+              -name "embedded.mobileprovision" \
+              | grep -q .; then
+            echo "ERROR: embedded.mobileprovision still exists"
+            exit 1
+          fi
+
+          echo "Unsigned IPA verification passed."
+
+      # ------------------------------------------------------------
+      # 9. Upload IPA
+      # ------------------------------------------------------------
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyTelegram-iOS-unsigned
+          path: build/MyTelegram-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      # ------------------------------------------------------------
+      # 10. Upload DSYM separately
+      # ------------------------------------------------------------
+      - name: Upload dSYM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyTelegram-iOS-dSYM
+          path: build/artifacts/Telegram.DSYMs.zip
+          if-no-files-found: warn
+          retention-days: 14
