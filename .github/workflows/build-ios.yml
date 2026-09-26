@@ -10,10 +10,6 @@ jobs:
     steps:
       # ============================================================
       # 1. Checkout 主仓库
-      #
-      # 不让 actions/checkout 自动拉 submodule。
-      # 因为 .gitmodules 里面 rlottie / tgcalls 使用了 ../xxx.git，
-      # 在你的 fork 下会错误解析成 sanqiuqwq/xxx.git。
       # ============================================================
       - name: Checkout source
         uses: actions/checkout@v4
@@ -205,9 +201,6 @@ jobs:
       # ============================================================
       # 7. Fix BuildConfigExtra deprecated APIs
       #
-      # 注意：
-      # 不修改最低 iOS 版本。
-      #
       # Xcode 26 SDK 下：
       #
       #   NXGetArchInfoFromCpuType
@@ -282,27 +275,6 @@ jobs:
 
       # ============================================================
       # 9. Prepare fake codesigning data
-      #
-      # 实际目录结构：
-      #
-      # build-system/fake-codesigning/
-      # ├── certs/
-      # │   ├── Public.cer
-      # │   └── SelfSigned.p12
-      # └── profiles/
-      #     ├── BroadcastUpload.mobileprovision
-      #     ├── Intents.mobileprovision
-      #     ├── NotificationContent.mobileprovision
-      #     ├── NotificationService.mobileprovision
-      #     ├── Share.mobileprovision
-      #     ├── Telegram.mobileprovision
-      #     ├── WatchApp.mobileprovision
-      #     ├── WatchExtension.mobileprovision
-      #     └── Widget.mobileprovision
-      #
-      # 使用项目自己的 ImportCertificates.py。
-      #
-      # 不使用你的真实 .p12。
       # ============================================================
       - name: Prepare fake codesigning data
         shell: bash
@@ -401,10 +373,15 @@ jobs:
       # ============================================================
       # 10. Build ARM64 IPA
       #
-      # 使用项目原本的 release_arm64 配置。
+      # 关键：
       #
-      # 不强制修改 minimum_os_version。
-      # 使用项目默认 Deployment Target。
+      # --outputBuildArtifactsPath
+      #
+      # 让 Make.py 主动把最终构建产物收集到：
+      #
+      # build/artifacts/
+      #
+      # 不再依赖手动猜测 Bazel 输出路径。
       # ============================================================
       - name: Build ARM64 IPA
         shell: bash
@@ -412,6 +389,7 @@ jobs:
           set -e
 
           rm -rf build/artifacts
+          mkdir -p build/artifacts
 
           echo "=============================="
           echo "Starting ARM64 build"
@@ -424,114 +402,92 @@ jobs:
             --configurationPath="$PWD/build-configuration.json" \
             --codesigningInformationPath="$PWD/build-codesigning" \
             --buildNumber="${{ github.run_number }}" \
-            --configuration=release_arm64
+            --configuration=release_arm64 \
+            --outputBuildArtifactsPath="$PWD/build/artifacts"
 
           echo
           echo "=============================="
           echo "Make.py finished successfully"
           echo "=============================="
 
+          echo
+          echo "=============================="
+          echo "Build artifacts"
+          echo "=============================="
+
+          if [ ! -d "build/artifacts" ]; then
+            echo "ERROR: build/artifacts directory was not created."
+            exit 1
+          fi
+
+          find build/artifacts \
+            -maxdepth 3 \
+            -print \
+            | sort
+
       # ============================================================
-      # 11. Locate generated IPA
+      # 11. Verify generated IPA
       #
-      # 不假定 Telegram.ipa 一定存在于 build/artifacts。
+      # Make.py 已经通过 --outputBuildArtifactsPath
+      # 将构建产物收集到 build/artifacts。
       #
-      # Make.py / Bazel 的实际输出位置可能随项目版本变化。
-      #
-      # 所以这里直接搜索整个工作目录。
+      # 正常情况下这里应该存在 Telegram.ipa。
       # ============================================================
-      - name: Locate generated IPA
+      - name: Verify generated IPA
         shell: bash
         run: |
           set -e
 
           echo "=============================="
-          echo "Current directory"
+          echo "Build artifacts"
           echo "=============================="
 
-          pwd
-
-          echo
-          echo "=============================="
-          echo "Top-level directories"
-          echo "=============================="
-
-          find . \
-            -maxdepth 2 \
-            -type d \
-            -not -path './.git*' \
-            | sort \
-            | head -300
+          find build/artifacts \
+            -maxdepth 3 \
+            -print \
+            | sort
 
           echo
           echo "=============================="
-          echo "Searching for IPA files"
+          echo "Searching for IPA"
           echo "=============================="
 
-          IPA_FILES=$(find . \
+          IPA_FILES=$(find build/artifacts \
             -type f \
             -name "*.ipa" \
-            -not -path './.git/*' \
             -print \
             | sort)
 
           if [ -z "$IPA_FILES" ]; then
             echo
-            echo "ERROR: No IPA file was generated."
+            echo "ERROR: Telegram IPA was not generated."
             echo
-            echo "=============================="
-            echo "Searching for Telegram.app"
-            echo "=============================="
-
-            find . \
-              -type d \
-              -name "*.app" \
-              -not -path './.git/*' \
+            echo "Contents of build/artifacts:"
+            find build/artifacts \
+              -maxdepth 5 \
               -print \
-              | sort \
-              | head -300
+              | sort
 
-            echo
-            echo "=============================="
-            echo "Searching for Telegram outputs"
-            echo "=============================="
-
-            find . \
-              -type f \
-              \( \
-                -name "Telegram*" \
-                -o -name "*.xcarchive" \
-                -o -name "*.zip" \
-              \) \
-              -not -path './.git/*' \
-              -print \
-              | sort \
-              | head -500
-
-            echo
-            echo "ERROR: Build completed but no IPA was found."
             exit 1
           fi
 
           echo "$IPA_FILES"
+
+          IPA=$(echo "$IPA_FILES" | head -n 1)
+
+          echo
+          echo "=============================="
+          echo "Selected IPA"
+          echo "=============================="
+
+          echo "$IPA"
 
           echo
           echo "=============================="
           echo "IPA details"
           echo "=============================="
 
-          IPA=$(echo "$IPA_FILES" | head -n 1)
-
-          echo "Selected IPA:"
-          echo "$IPA"
-
           ls -lh "$IPA"
-
-          echo
-          echo "=============================="
-          echo "IPA file information"
-          echo "=============================="
-
           file "$IPA"
 
           echo
