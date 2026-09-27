@@ -282,7 +282,7 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
             if let contactIdentifier = person.contactIdentifier, !contactIdentifier.isEmpty {
                 filteredPersons.append(person)
             }
-            
+            /*
             if #available(iOSApplicationExtension 10.3, iOS 10.3, *) {
                 if let siriMatches = person.siriMatches {
                     for match in siriMatches {
@@ -293,6 +293,7 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
                 }
             }
         }
+        */
         
         if filteredPersons.isEmpty {
             completion([.noResult])
