@@ -292,8 +292,8 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
                     }
                 }
             }
-        }
-        */
+            */
+        } // 註：記得確認原本的 for 迴圈右括號 } 有正確閉合
         
         if filteredPersons.isEmpty {
             completion([.noResult])
@@ -317,6 +317,7 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
             if let contactIdentifier = person.contactIdentifier {
                 return contactIdentifier
             }
+            /*
             if #available(iOSApplicationExtension 10.3, iOS 10.3, *) {
                 if let siriMatches = person.siriMatches {
                     for match in siriMatches {
@@ -326,6 +327,7 @@ class DefaultIntentHandler: INExtension, INSendMessageIntentHandling, INSearchFo
                     }
                 }
             }
+            */
             return nil
         })
         
