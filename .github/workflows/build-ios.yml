@@ -130,13 +130,6 @@ jobs:
 
       # ============================================================
       # 6. Create build configuration
-      #
-      # 只修改 API ID / API Hash。
-      #
-      # 不修改 bundle_id / team_id。
-      #
-      # 使用项目自带 fake-codesigning。
-      # 后面生成 IPA 后再用全能签重新签名。
       # ============================================================
       - name: Create build configuration
         env:
@@ -199,19 +192,7 @@ jobs:
           PY
 
       # ============================================================
-      # 7. Fix BuildConfigExtra deprecated APIs
-      #
-      # Xcode 26 SDK 下：
-      #
-      #   NXGetArchInfoFromCpuType
-      #   NXArchInfo
-      #
-      # 会产生 deprecated warning。
-      #
-      # 项目启用了 -Werror，
-      # 所以 warning 会变成编译错误。
-      #
-      # 这里只针对 BuildConfigExtra.m 忽略 deprecated warning。
+      # 7. Fix BuildConfigExtra deprecated warnings
       # ============================================================
       - name: Fix BuildConfigExtra deprecated warnings
         shell: bash
@@ -359,7 +340,7 @@ jobs:
           fi
 
           python3 build-system/Make/ImportCertificates.py \
-            --path "$PWD/build-codesigning/certs"
+            --path "$PWD/build-codesigning"
 
           echo
           echo "=============================="
@@ -371,17 +352,52 @@ jobs:
             -p codesigning
 
       # ============================================================
+      # 9.5 Inject Siri entitlement into fake codesigning & Bazel templates
+      # ============================================================
+      - name: Inject Siri Entitlement
+        shell: bash
+        run: |
+          set -e
+
+          echo "=============================="
+          echo "Injecting com.apple.developer.siri entitlement"
+          echo "=============================="
+
+          python3 - <<'PY'
+          import glob
+          from pathlib import Path
+
+          target_extensions = ['*.entitlements', '*.plist']
+          files_to_check = []
+
+          for ext in target_extensions:
+              files_to_check.extend(glob.glob(f"build-codesigning/**/{ext}", recursive=True))
+              files_to_check.extend(glob.glob(f"build-system/**/{ext}", recursive=True))
+              files_to_check.extend(glob.glob(f"Telegram/**/{ext}", recursive=True))
+
+          siri_key_xml = "	<key>com.apple.developer.siri</key>\n	<true/>\n"
+          modified_count = 0
+
+          for file_path in set(files_to_check):
+              p = Path(file_path)
+              if not p.is_file():
+                  continue
+              
+              try:
+                  content = p.read_text(encoding='utf-8', errors='ignore')
+                  if "<dict>" in content and "com.apple.developer.siri" not in content:
+                      new_content = content.replace("<dict>", "<dict>\n" + siri_key_xml, 1)
+                      p.write_text(new_content, encoding='utf-8')
+                      print(f"Injected Siri entitlement into: {file_path}")
+                      modified_count += 1
+              except Exception as e:
+                  print(f"Skipped {file_path}: {e}")
+
+          print(f"\nTotal files patched: {modified_count}")
+          PY
+
+      # ============================================================
       # 10. Build ARM64 IPA
-      #
-      # 关键：
-      #
-      # --outputBuildArtifactsPath
-      #
-      # 让 Make.py 主动把最终构建产物收集到：
-      #
-      # build/artifacts/
-      #
-      # 不再依赖手动猜测 Bazel 输出路径。
       # ============================================================
       - name: Build ARM64 IPA
         shell: bash
@@ -427,11 +443,6 @@ jobs:
 
       # ============================================================
       # 11. Verify generated IPA
-      #
-      # Make.py 已经通过 --outputBuildArtifactsPath
-      # 将构建产物收集到 build/artifacts。
-      #
-      # 正常情况下这里应该存在 Telegram.ipa。
       # ============================================================
       - name: Verify generated IPA
         shell: bash
