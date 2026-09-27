@@ -255,7 +255,7 @@ jobs:
           fi
 
       # ============================================================
-      # 9. Prepare fake codesigning data & Fix Keychain partition issue
+      # 9. Prepare fake codesigning data
       # ============================================================
       - name: Prepare fake codesigning data
         shell: bash
@@ -339,19 +339,8 @@ jobs:
             exit 1
           fi
 
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("build-system/Make/ImportCertificates.py")
-          if p.exists():
-              content = p.read_text(encoding='utf-8')
-              if "set-key-partition-list" in content and "check_call" in content:
-                  content = content.replace("subprocess.check_call", "subprocess.call")
-                  p.write_text(content, encoding='utf-8')
-                  print("Patched ImportCertificates.py to ignore keychain partition warning.")
-          PY
-
           python3 build-system/Make/ImportCertificates.py \
-            --path "$PWD/build-codesigning/certs"
+            --path "$PWD/build-codesigning"
 
           echo
           echo "=============================="
@@ -363,7 +352,7 @@ jobs:
             -p codesigning
 
       # ============================================================
-      # 9.5 Inject Siri entitlement safely
+      # 9.5 Inject Siri entitlement into fake codesigning & Bazel templates
       # ============================================================
       - name: Inject Siri Entitlement
         shell: bash
@@ -378,10 +367,13 @@ jobs:
           import glob
           from pathlib import Path
 
+          target_extensions = ['*.entitlements', '*.plist']
           files_to_check = []
-          files_to_check.extend(glob.glob("build-codesigning/**/*.entitlements", recursive=True))
-          files_to_check.extend(glob.glob("build-system/**/*.entitlements", recursive=True))
-          files_to_check.extend(glob.glob("Telegram/**/*.entitlements", recursive=True))
+
+          for ext in target_extensions:
+              files_to_check.extend(glob.glob(f"build-codesigning/**/{ext}", recursive=True))
+              files_to_check.extend(glob.glob(f"build-system/**/{ext}", recursive=True))
+              files_to_check.extend(glob.glob(f"Telegram/**/{ext}", recursive=True))
 
           siri_key_xml = "	<key>com.apple.developer.siri</key>\n	<true/>\n"
           modified_count = 0
@@ -402,43 +394,6 @@ jobs:
                   print(f"Skipped {file_path}: {e}")
 
           print(f"\nTotal files patched: {modified_count}")
-          PY
-
-      # ============================================================
-      # 9.6 Disable Siri Preferences Call to Prevent Crash
-      # ============================================================
-      - name: Disable Siri Code
-        shell: bash
-        run: |
-          set -e
-
-          echo "=============================="
-          echo "Patching Telegram code to disable Siri INPreferences"
-          echo "=============================="
-
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          search_dir = Path("submodules")
-          count = 0
-
-          for file_path in search_dir.glob("**/*.swift"):
-              try:
-                  content = file_path.read_text(encoding="utf-8", errors="ignore")
-                  if "INPreferences" in content:
-                      print(f"Found INPreferences in: {file_path}")
-                      new_content = content.replace("INPreferences.requestSiriLanguageCode", "// INPreferences.requestSiriLanguageCode")
-                      new_content = new_content.replace("INPreferences.siriLanguageCode", '""')
-                      
-                      if new_content != content:
-                          file_path.write_text(new_content, encoding="utf-8")
-                          print(f"Successfully patched: {file_path}")
-                          count += 1
-              except Exception as e:
-                  print(f"Error reading {file_path}: {e}")
-
-          print(f"Total Siri files patched: {count}")
           PY
 
       # ============================================================
