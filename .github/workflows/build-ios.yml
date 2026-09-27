@@ -255,7 +255,7 @@ jobs:
           fi
 
       # ============================================================
-      # 9. Prepare fake codesigning data
+      # 9. Prepare fake codesigning data & Fix Keychain partition issue
       # ============================================================
       - name: Prepare fake codesigning data
         shell: bash
@@ -339,8 +339,20 @@ jobs:
             exit 1
           fi
 
+          # Patch ImportCertificates.py to prevent set-key-partition-list failure on CI runner
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("build-system/Make/ImportCertificates.py")
+          if p.exists():
+              content = p.read_text(encoding='utf-8')
+              if "set-key-partition-list" in content and "check_call" in content:
+                  content = content.replace("subprocess.check_call", "subprocess.call")
+                  p.write_text(content, encoding='utf-8')
+                  print("Patched ImportCertificates.py to ignore keychain partition warning.")
+          PY
+
           python3 build-system/Make/ImportCertificates.py \
-            --path "$PWD/build-codesigning"
+            --path "$PWD/build-codesigning/certs"
 
           echo
           echo "=============================="
@@ -352,7 +364,7 @@ jobs:
             -p codesigning
 
       # ============================================================
-      # 9.5 Inject Siri entitlement into fake codesigning & Bazel templates
+      # 9.5 Inject Siri entitlement safely
       # ============================================================
       - name: Inject Siri Entitlement
         shell: bash
@@ -367,13 +379,10 @@ jobs:
           import glob
           from pathlib import Path
 
-          target_extensions = ['*.entitlements', '*.plist']
           files_to_check = []
-
-          for ext in target_extensions:
-              files_to_check.extend(glob.glob(f"build-codesigning/**/{ext}", recursive=True))
-              files_to_check.extend(glob.glob(f"build-system/**/{ext}", recursive=True))
-              files_to_check.extend(glob.glob(f"Telegram/**/{ext}", recursive=True))
+          files_to_check.extend(glob.glob("build-codesigning/**/*.entitlements", recursive=True))
+          files_to_check.extend(glob.glob("build-system/**/*.entitlements", recursive=True))
+          files_to_check.extend(glob.glob("Telegram/**/*.entitlements", recursive=True))
 
           siri_key_xml = "	<key>com.apple.developer.siri</key>\n	<true/>\n"
           modified_count = 0
