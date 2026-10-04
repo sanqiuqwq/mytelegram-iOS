@@ -8,41 +8,9 @@ func updateAppConfigurationOnce(postbox: Postbox, network: Network) -> Signal<Vo
     return postbox.transaction { transaction -> Int32 in
         return currentAppConfiguration(transaction: transaction).hash
     }
-    |> mapToSignal { hash -> Signal<Void, NoError> in
-        return network.request(Api.functions.help.getAppConfig(hash: hash))
-        |> map { result -> (data: Api.JSONValue, hash: Int32)? in
-            switch result {
-            case let .appConfig(appConfigData):
-                let (updatedHash, config) = (appConfigData.hash, appConfigData.config)
-                return (config, updatedHash)
-            case .appConfigNotModified:
-                return nil
-            }
-        }
-        |> `catch` { _ -> Signal<(data: Api.JSONValue, hash: Int32)?, NoError> in
-            return .single(nil)
-        }
-        |> mapToSignal { result -> Signal<Void, NoError> in
-            guard let result = result else {
+    |> mapToSignal { hash -> Signal<Void, NoError> 
                 return .complete()
             }
-            return postbox.transaction { transaction -> Void in
-                if let data = JSON(apiJson: result.data) {
-                    updateAppConfiguration(transaction: transaction, { configuration -> AppConfiguration in
-                        var configuration = configuration
-                        configuration.data = data
-                        configuration.hash = result.hash
-                        return configuration
-                    })
-                    
-                    if let audioTranscriptionCooldownUntilTimestamp = data["transcribe_audio_trial_cooldown_until"] as? Double {
-                        _internal_updateAudioTranscriptionTrialState(transaction: transaction, { $0.withUpdatedCooldownUntilTime(Int32(audioTranscriptionCooldownUntilTimestamp)) })
-                    } else {
-                        _internal_updateAudioTranscriptionTrialState(transaction: transaction, { $0.withUpdatedCooldownUntilTime(nil) })
-                    }
-                }
-            }
-        }
     }
 }
 
