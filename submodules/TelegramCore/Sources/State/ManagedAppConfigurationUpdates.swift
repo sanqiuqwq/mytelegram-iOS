@@ -8,9 +8,8 @@ func updateAppConfigurationOnce(postbox: Postbox, network: Network) -> Signal<Vo
     return postbox.transaction { transaction -> Int32 in
         return currentAppConfiguration(transaction: transaction).hash
     }
-    |> mapToSignal { hash -> Signal<Void, NoError> 
-                return .complete()
-            }
+    |> mapToSignal { hash -> Signal<Void, NoError> in
+        return .complete()
     }
 }
 
@@ -20,5 +19,6 @@ func managedAppConfigurationUpdates(postbox: Postbox, network: Network) -> Signa
             subscriber.putCompletion()
         })
     }
-    return (poll |> then(.complete() |> suspendAwareDelay(1.0 * 60.0 * 60.0, queue: Queue.concurrentDefaultQueue()))) |> restart
+    
+    return (poll |> then(.complete() |> suspendAwareDelay(24.0 * 60.0 * 60.0, queue: Queue.concurrentDefaultQueue()))) |> restart
 }
