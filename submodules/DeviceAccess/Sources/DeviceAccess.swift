@@ -75,7 +75,7 @@ public final class DeviceAccess {
     
     private static let siriPromise = Promise<Bool?>(nil)
     static var siri: Signal<Bool?, NoError> {
-        return self.siriPromise.get()
+        return .single(nil)
     }
     
     private static let locationPromise = Promise<Bool?>(nil)
